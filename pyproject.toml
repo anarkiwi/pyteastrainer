@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyteastrainer"
-version = "0.1.0"
-description = "Fail the pytest run when the suite has grown redundant: per-test coverage + AST fingerprints + ratchet baseline."
+version = "0.2.0"
+description = "pytest gate that fails when tests add no coverage, using an exact minimal-suite solver."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
-dependencies = ["pytest>=7.0", "coverage>=7.0"]
+dependencies = ["pytest>=8.0", "coverage>=7.6", "numpy", "scipy>=1.11", "tqdm"]
 classifiers = [
     "Framework :: Pytest",
     "Programming Language :: Python :: 3 :: Only",
@@ -45,6 +45,10 @@ show_missing = true
 
 [tool.pylint.format]
 max-line-length = 100
+
+[tool.pylint.design]
+max-args = 8
+max-positional-arguments = 8
 
 [tool.pylint."messages control"]
 disable = [

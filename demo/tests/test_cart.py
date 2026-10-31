@@ -1,9 +1,4 @@
-"""A suite in the style an over-eager coding agent produces.
-
-Legit tests are at the top. Everything under "BLOAT" is the kind of thing
-that accumulates: paraphrased copies, same-assertion-different-literal
-clones, and "smaller" tests that a bigger one already proves.
-"""
+"""Demo suite: a lean core, then the bloat that `pytest --strain` asks to remove."""
 
 import pytest
 
@@ -25,14 +20,10 @@ def test_add_existing_item_increments_qty():
     assert c.items["a"].qty == 3
 
 
-def test_add_rejects_zero_qty():
+@pytest.mark.parametrize("qty,price", [(0, 1.0), (-1, 1.0), (1, -1.0), (1, -5.0)])
+def test_add_rejects(qty, price):
     with pytest.raises(CartError):
-        Cart().add("a", 1.0, qty=0)
-
-
-def test_add_rejects_negative_price():
-    with pytest.raises(CartError):
-        Cart().add("a", -1.0)
+        Cart().add("a", price, qty=qty)
 
 
 def test_remove_unknown_sku():
@@ -85,8 +76,13 @@ def test_total_rounds_to_cents():
     assert c.total() == 99.999 + 5.0 or c.total() == 105.0
 
 
-# ----------------------------------------------------------------- BLOAT --
-# 1. Paraphrased copies of test_add_new_item (same body, renamed variables).
+# ----------------------------------------------------------------- bloat --
+def test_bad_coupon_rejected():
+    cart = Cart()
+    with pytest.raises(CartError):
+        cart.apply_coupon("NOPE")
+
+
 def test_add_single_item():
     cart = Cart()
     cart.add("a", 10.0)
@@ -102,7 +98,6 @@ def test_adding_item_to_empty_cart():
     assert the_cart.items["a"].qty == 1
 
 
-# 2. Clones: same path and same assertion shape, different literals.
 def test_total_with_shipping_small():
     c = Cart()
     c.add("x", 10.0)
@@ -121,7 +116,6 @@ def test_total_with_shipping_tiny():
     assert c.total() == 5.5
 
 
-# 3. Subsumed: everything these touch, test_pct_coupon already touches.
 def test_coupon_is_stored():
     c = Cart()
     c.apply_coupon("TEN")
@@ -134,13 +128,12 @@ def test_subtotal_single():
     assert c.subtotal() == 3.0
 
 
-# 4. Parametrize with duplicate rows (identical values) and clone rows.
 @pytest.mark.parametrize(
     "price,expected",
     [
         (10.0, 15.0),
         (20.0, 25.0),
-        (10.0, 15.0),  # agent re-added an existing case
+        (10.0, 15.0),
     ],
 )
 def test_total_param(price, expected):

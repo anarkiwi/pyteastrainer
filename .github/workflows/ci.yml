@@ -5,6 +5,10 @@ on:
   pull_request:
 permissions:
   contents: read
+env:
+  OMP_NUM_THREADS: 2
+  MKL_NUM_THREADS: 2
+  OPENBLAS_NUM_THREADS: 2
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -36,7 +40,7 @@ jobs:
           set +e
           pytest -q --strain --strain-report strain-report.json
           [ $? -eq 1 ] || { echo "expected exit 1 from the gate"; exit 1; }
-          python -c "import json; m=json.load(open('strain-report.json'))['metrics']; assert m['duplicates']==3, m"
+          python -c "import json; r=json.load(open('strain-report.json')); k={a['kind'] for a in r['actions']}; assert {'duplicate','case','subset','union','same'} <= k and r['parametrize'], k"
   build:
     runs-on: ubuntu-latest
     steps:

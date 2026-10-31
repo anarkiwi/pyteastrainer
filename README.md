@@ -1,184 +1,107 @@
 # pyteastrainer
 
-
-Strains the redundant tests out of a pytest suite.
-A pytest plugin that **fails the run when the suite has grown redundant**, so an
-agent cannot land a test that proves nothing new.
+A pytest plugin that fails the run when the suite contains tests that add no
+coverage, and says exactly which tests to remove or change to make it green.
+It records per-test coverage, solves the exact minimum covering suite with
+HiGHS, and gates on every test outside it.
 
 ```
-pip install -e .                 # not on PyPI yet
+pip install git+https://github.com/anarkiwi/pyteastrainer
 pytest --strain
 ```
 
-```
-================================= pyteastrainer =================================
-  analyzed 22 passed tests over 24 lines; a coverage-equivalent suite needs 9 (redundancy 59.1%)
-  duplicate      3   identical coverage and body              -> delete
-  clone          4   same path & assertions, other literals   -> parametrize
-  subsumed       6   strict subset of one other test          -> review/delete
-  redundant      0   nothing beyond the union of others       -> review
-  essential      8   covers something nothing else does       -> keep
-  exempt         1   @pytest.mark.strain_exempt                -> keep
+## Example
 
-  duplicate tests/test_cart.py::test_add_single_item
-            == tests/test_cart.py::test_add_new_item
+```
+============================== pyteastrainer: RED ==============================
+25 passed tests cover 41 branches; 9 of them (0.01 s of 0.02 s) cover all of it. To make teastrainer green:
+  drop cases [0-1.0], [1--1.0] from the parametrize of tests/test_cart.py::test_add_rejects: every branch they reach is reached by tests/test_cart.py::test_add_rejects[-1-1.0], tests/test_cart.py::test_add_rejects[1--5.0]
+  delete tests/test_cart.py::test_bad_coupon_rejected (duplicate of tests/test_cart.py::test_unknown_coupon)
+  delete tests/test_cart.py::test_coupon_is_stored: every branch it reaches is reached by tests/test_cart.py::test_pct_coupon
+  delete tests/test_cart.py::test_total_adds_shipping_under_100: same branches as tests/test_cart.py::test_total_rounds_to_cents
+  delete tests/test_cart.py::test_total_free_shipping_at_100: its 15 branches are all reached by tests/test_cart.py::test_pct_coupon (14), tests/test_cart.py::test_total_rounds_to_cents (1)
   ...
-  FAIL: duplicates 3 > max 0
+  parametrize: merge tests/test_cart.py::test_abs_coupon_floors_at_zero, test_pct_coupon into one test:
+      @pytest.mark.parametrize('p0, p1, p2', [(2.0, 'FIVEOFF', 5.0), (200.0, 'TEN', 180.0)], ids=['test_abs_coupon_floors_at_zero', 'test_pct_coupon'])
+      def test_abs_coupon_floors_at_zero(p0, p1, p2):
+          ...
+Removing these leaves a suite with the same coverage, 9 tests, 0.01 s, that teastrainer passes. If a test asserts something coverage can't see, mark it @pytest.mark.strain_exempt(reason=...).
+speed (advisory): slowest tests in the minimal suite; a faster test reaching these makes it redundant
+  0.00 s (16%) tests/test_cart.py::test_add_rejects[-1-1.0]: 2 branches only it reaches: shop/cart.py:26-27
 ```
 
-Exit status 1. The run's own tests still pass; the *gate* failed.
+What to do: apply every action line (delete the test, drop the parametrize
+cases, paste the merged test), then rerun. The result is a minimum cover in
+which every test reaches something no other test does, so it is GREEN and
+stays GREEN. A test that asserts something coverage cannot see gets
+`@pytest.mark.strain_exempt(reason="...")`: it is always kept and may make
+others redundant. `cd demo && pytest --strain` reproduces the output above.
 
-## Why not TestIQ / recov?
+## Options
 
-Both exist and both find the same thing with coverage contexts. They are
-analyzers you run afterwards and read. This is a gate: it runs inside pytest,
-sets the exit status, and ratchets against a baseline, so it can live in CI
-and in an agent's pre-commit loop. It also looks at the test body, not just
-coverage, which is what separates "copy-pasted" from "same path, different
-oracle".
-
-## How it decides
-
-For every **passed** test it records two things:
-
-1. **Coverage fingerprint** — the set of production lines (or branch arcs with
-   `--strain-branch`) the test executed. Test files, `conftest.py`, venvs and
-   site-packages are excluded, so a test's own body never makes it "unique".
-2. **Static fingerprint** — its body with docstrings dropped, single-use
-   temporaries inlined, identifiers alpha-renamed; once with literals kept
-   (`exact`) and once with literals abstracted to their type (`shape`).
-   Parametrized instances mix their runtime parameter values into `exact`.
-
-Then each test gets at most one label, strongest first:
-
-| label | meaning | default gate |
+| Option (ini) | Default | Meaning |
 |---|---|---|
-| `duplicate` | same coverage **and** same `exact` body as a kept sibling | fail if > 0 |
-| `clone` | same coverage and same `shape`; only literals differ | report |
-| `subsumed` | coverage is a strict subset of **one** other test | report |
-| `redundant` | nothing beyond the union of all other tests | report |
-| `essential` | covers at least one element nothing else does | keep |
+| `--strain` | off | Record per-test coverage and gate |
+| `--strain-source PATH` (`strain_source`) | rootdir minus tests | Production code to measure |
+| `--strain-lines` (`strain_lines`) | branches | Measure lines instead of branch arcs |
+| `--strain-order` (`strain_order`) | `count,time` | Fewest tests then least runtime, or `time,count` |
+| `--strain-time-limit S` (`strain_time_limit`) | 60 | HiGHS seconds per solver stage |
+| `--strain-max-time S` (`strain_max_time`) | off | Tests slower than S are RED; the cover avoids them where it can |
+| `--strain-parametrize` (`strain_parametrize`) | `fail` | Same-shape kept tests: suggest a parametrize merge (`fail`, `warn`, `off`) |
+| `--strain-baseline FILE` (`strain_baseline`) | none | Accepted redundant / slow tests (ratchet) |
+| `--strain-update-baseline` | | Write the current findings to the baseline; never fails |
+| `--strain-report FILE` (`strain_report`) | none | Full JSON report |
+| `--strain-show N` / `--strain-show-slow N` | 20 / 3 | Action lines / advisory speed lines |
+| `--strain-warn-only` | | Report without changing the exit status |
+| `--strain-select` | | Run only the optimal suite of the last `--strain` recording |
+| `--strain-select-coverage F` (`strain_select_coverage`) | 1 | With select: least runtime reaching fraction F of coverage |
 
-It also computes a **greedy minimal coverage-equivalent suite** and reports
-`redundancy = 1 - minimal/analyzed`. On a 3,000-test synthetic suite the
-analysis adds well under a second.
+The exit status becomes 1 on RED; an existing failure status is never changed.
 
-Only `duplicate` fails by default, because the other three have honest false
-positives: a boundary test (`total() at exactly 100`) takes the same path as a
-bigger test and is still worth keeping. Those are what the thresholds, the
-ratchet and the marker are for.
+## pytest-cov and xdist
 
-## The ratchet (the part that stops agents)
+With pytest-cov active, pyteastrainer reads its data instead of tracing. Per-test
+contexts are required, and are the only way to run under xdist:
 
-On an existing suite you don't want to fail on day one. Record where you are:
+```
+pytest -n auto --cov=src --cov-branch --cov-context=test --strain
+```
+
+On Python 3.14 set `COVERAGE_CORE=ctrace` (the sys.monitoring core cannot record
+contexts). The controller combines worker data and runs the gate.
+
+## Legacy suites
 
 ```
 pytest --strain --strain-baseline .strain-baseline.json --strain-update-baseline
+pytest --strain --strain-baseline .strain-baseline.json
 ```
 
-Commit the file. From then on, plain `pytest --strain --strain-baseline .strain-baseline.json`
-fails if **any** count (`duplicates`, `clones`, `subsumed`, `redundant`) or the
-redundancy ratio is worse than the baseline, and names the tests that are new
-since the baseline. When the suite gets leaner it tells you to re-run
-`--strain-update-baseline` to lock the gain in. The baseline can only move down
-unless a human regenerates it.
+Only findings not in the baseline fail. When baseline entries disappear the
+run says so; lock the gain in with `--strain-update-baseline`.
 
-With a baseline present the `duplicates > 0` default is suspended (the
-baseline owns the gate); pass `--strain-max-duplicates` explicitly to keep both.
+## Compared to pytest-maxcov
 
-## Configuration
+pytest-maxcov picks tests with Chvátal's greedy rule, which can keep far more
+tests than needed and gives no bound on how far off it is. pyteastrainer solves
+the set cover exactly as an integer program and reports the HiGHS status and
+gap, so a minimal suite is proven minimal. Because the gate fails exactly when
+some test covers nothing unique, deleting the reported tests gives a stable
+GREEN state rather than a moving target. It is a gate with an exit status and
+per-test actions, not only a selector, it runs under xdist through pytest-cov,
+and its threshold select mode (`--strain-select-coverage`) solves maxcov's
+coverage-fraction selection optimally.
 
-CLI flags or `pytest.ini` / `pyproject.toml` `[tool.pytest.ini_options]`:
+## More
 
-```ini
-[pytest]
-addopts = --strain --strain-baseline .strain-baseline.json --strain-report strain-report.json
-strain_source = src/mypkg          # default: rootdir minus test files
-strain_branch = true               # branch arcs instead of lines
-strain_max_duplicates = 0
-strain_max_clones = 10
-strain_max_subsumed = 50
-strain_max_redundancy = 0.4        # 1 - minimal_suite/analyzed
-strain_tolerance = 0.01            # slack over the baseline ratio
-strain_show = 20                   # findings printed in the terminal
-```
-
-`--strain-warn-only` reports without touching the exit status.
-
-Mark a test that asserts something coverage can't see (rounding, ordering,
-an error message, a boundary) and it is never flagged, never used to flag a
-twin, and always kept in the minimal suite:
-
-```python
-@pytest.mark.strain_exempt(reason="checks cent rounding, same path as test_total")
-def test_total_rounds_to_cents(): ...
-```
-
-## For agents
-
-`--strain-report strain-report.json` writes the full result:
-
-```json
-{
-  "metrics": {"analyzed": 22, "duplicates": 3, "clones": 4, "subsumed": 6,
-              "redundant": 0, "essential": 8, "minimal_suite": 9,
-              "redundancy_ratio": 0.5909},
-  "gate": {"passed": false, "violations": ["duplicates 3 > max 0"]},
-  "findings": [
-    {"nodeid": "tests/test_cart.py::test_add_single_item",
-     "kind": "duplicate",
-     "because_of": ["tests/test_cart.py::test_add_new_item"],
-     "detail": "identical coverage and identical body (modulo names)",
-     "elements": 7, "unique_elements": 0}
-  ],
-  "kept_for": {"tests/test_cart.py::test_add_new_item": ["tests/test_cart.py::test_add_single_item"]}
-}
-```
-
-A sensible agent instruction: *"If the pyteastrainer gate fails, delete every
-`duplicate`, merge `clone` groups into one `parametrize`, and justify or delete
-`subsumed` tests. Do not add `strain_exempt` to make the gate pass."*
-
-## Working with pytest-cov
-
-If pytest-cov is active, pyteastrainer does not start a second tracer; it reads
-pytest-cov's data. You must record contexts:
-
-```
-pytest --strain --cov=src --cov-context=test [--cov-branch]
-```
-
-Without `--cov-context=test` it refuses to run rather than silently analyze
-nothing.
-
-## Limitations
-
-- No `pytest-xdist` yet (`-n` is refused). Per-worker data would need combining.
-- Coverage is not semantics. Two tests on the same path with different
-  assertions are both reported as `clone`/`subsumed`; use the marker, the
-  thresholds or the ratchet rather than treating every finding as deletable.
-- Only passed tests are analyzed; a failing test's coverage is partial.
-- Static fingerprints come from the test's own function body. Tests whose
-  behaviour lives entirely in fixtures look alike to the `exact`/`shape`
-  comparison; coverage still separates them.
-
-## Demo
-
-```
-cd demo
-pytest --strain                                   # fails: 3 duplicates
-pytest --strain --strain-branch --strain-max-clones 0   # also fails on clones
-```
-
-`demo/tests/test_cart.py` has a legit block and a labelled BLOAT block so you
-can see which finding each pattern produces.
+- [docs/algorithm.md](docs/algorithm.md): formulations, convergence, benchmark
+- [docs/releasing.md](docs/releasing.md)
+- CLI on a recorded database: `python -m pyteastrainer.cover .coverage --junit junit.xml --pareto 0.95,0.99`
 
 ## Development
 
 ```
 pip install -e .[test]
-pytest -n auto --cov
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 pytest -n auto --cov
 black --check . && pylint pyteastrainer tests
 ```
-
-Releases: [docs/releasing.md](docs/releasing.md).
