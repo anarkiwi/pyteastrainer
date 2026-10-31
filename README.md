@@ -172,3 +172,13 @@ pytest --strain --strain-branch --strain-max-clones 0   # also fails on clones
 
 `demo/tests/test_cart.py` has a legit block and a labelled BLOAT block so you
 can see which finding each pattern produces.
+
+## Development
+
+```
+pip install -e .[test]
+pytest -n auto --cov
+black --check . && pylint pyteastrainer tests
+```
+
+Releases: [docs/releasing.md](docs/releasing.md).

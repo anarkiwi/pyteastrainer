@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,13 +7,52 @@ name = "pyteastrainer"
 version = "0.1.0"
 description = "Fail the pytest run when the suite has grown redundant: per-test coverage + AST fingerprints + ratchet baseline."
 readme = "README.md"
-requires-python = ">=3.9"
-license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+license = "Apache-2.0"
 dependencies = ["pytest>=7.0", "coverage>=7.0"]
-classifiers = ["Framework :: Pytest"]
+classifiers = [
+    "Framework :: Pytest",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.optional-dependencies]
+test = ["pytest-cov>=7.0", "pytest-xdist>=3.6", "black>=25.1", "pylint>=3.3"]
+
+[project.urls]
+Homepage = "https://github.com/anarkiwi/pyteastrainer"
 
 [project.entry-points.pytest11]
 pyteastrainer = "pyteastrainer.plugin"
 
 [tool.setuptools.packages.find]
 include = ["pyteastrainer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:pyteastrainer"
+
+[tool.coverage.run]
+source = ["pyteastrainer"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint."messages control"]
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-many-instance-attributes",
+    "too-many-locals",
+    "too-many-branches",
+    "too-many-statements",
+    "invalid-name",
+]

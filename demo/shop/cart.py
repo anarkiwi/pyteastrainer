@@ -1,4 +1,5 @@
 """Tiny shopping-cart module used by the demo suite."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -53,7 +54,7 @@ class Cart:
             else:
                 sub = max(0.0, sub - value)
         if sub >= 100:
-            return round(sub, 2)       # free shipping
+            return round(sub, 2)  # free shipping
         return round(sub + 5.0, 2)
 
     def skus(self) -> List[str]:

@@ -15,6 +15,7 @@ AST:
 Parametrized instances share a body, so the runtime parameter values are mixed
 into the ``exact`` fingerprint by the plugin (see ``mix_params``).
 """
+
 from __future__ import annotations
 
 import ast
@@ -22,7 +23,7 @@ import hashlib
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 
 @dataclass(frozen=True)
@@ -65,7 +66,9 @@ class _Normalizer(ast.NodeTransformer):
 
     def visit_Constant(self, node: ast.Constant) -> ast.AST:
         if self.abstract:
-            return ast.copy_location(ast.Constant(value=type(node.value).__name__), node)
+            return ast.copy_location(
+                ast.Constant(value=type(node.value).__name__), node
+            )
         return node
 
     def visit_Expr(self, node: ast.Expr) -> Optional[ast.AST]:
@@ -91,7 +94,9 @@ def _fingerprint_node(fn: ast.AST) -> StaticFingerprint:
     body_only = _inline_temporaries(_clone(body_only))
     exact = ast.dump(_Normalizer(False).visit(_clone(body_only)), annotate_fields=False)
     shape = ast.dump(_Normalizer(True).visit(_clone(body_only)), annotate_fields=False)
-    return StaticFingerprint(_digest(exact), _digest(shape), n_asserts, getattr(fn, "lineno", 0))
+    return StaticFingerprint(
+        _digest(exact), _digest(shape), n_asserts, getattr(fn, "lineno", 0)
+    )
 
 
 def _clone(node: ast.AST) -> ast.AST:
@@ -118,10 +123,13 @@ def _inline_temporaries(mod: ast.Module) -> ast.Module:
                     assigns[n.id] = assigns.get(n.id, 0) + 1
         target = None
         for i, stmt in enumerate(mod.body):
-            if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
-                    and isinstance(stmt.targets[0], ast.Name)
-                    and assigns.get(stmt.targets[0].id) == 1
-                    and loads.get(stmt.targets[0].id) == 1):
+            if (
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+                and assigns.get(stmt.targets[0].id) == 1
+                and loads.get(stmt.targets[0].id) == 1
+            ):
                 target = (i, stmt.targets[0].id, stmt.value)
                 break
         if target is None:
@@ -159,6 +167,9 @@ def _index_file(path: str) -> Dict[str, StaticFingerprint]:
     return out
 
 
+clear_cache = _index_file.cache_clear
+
+
 def fingerprint_for(path: str, qualname: str) -> Optional[StaticFingerprint]:
     return _index_file(path).get(qualname)
 
@@ -167,4 +178,6 @@ def mix_params(fp: StaticFingerprint, params_repr: str) -> StaticFingerprint:
     """Fold runtime parameter values into the exact fingerprint."""
     if not params_repr:
         return fp
-    return StaticFingerprint(_digest(fp.exact + "|" + params_repr), fp.shape, fp.n_asserts, fp.lineno)
+    return StaticFingerprint(
+        _digest(fp.exact + "|" + params_repr), fp.shape, fp.n_asserts, fp.lineno
+    )

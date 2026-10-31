@@ -1,19 +1,35 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - run: pip install -e .[test]
+      - run: black --check .
+      - run: pylint pyteastrainer tests
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python: ["3.9", "3.12", "3.13"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
-      - run: pip install -e . pytest-cov
+      - run: pip install -e .[test]
       - name: plugin tests
-        run: pytest -q tests/
+        run: pytest -n auto --cov
       - name: demo suite must fail the gate
         working-directory: demo
         run: |
@@ -21,3 +37,13 @@ jobs:
           pytest -q --strain --strain-report strain-report.json
           [ $? -eq 1 ] || { echo "expected exit 1 from the gate"; exit 1; }
           python -c "import json; m=json.load(open('strain-report.json'))['metrics']; assert m['duplicates']==3, m"
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
