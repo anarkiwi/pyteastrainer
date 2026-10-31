@@ -116,6 +116,14 @@ keyword they are passed to when there is one). The first member's original
 body is used when the members' un-inlined shapes match, otherwise the inlined
 form, and old function names become the `ids`.
 
+## Baseline and CLI
+
+`--strain-baseline FILE` lists accepted redundant and slow tests; a final
+solver stage minimises the kept baseline tests, so accepted tests are dropped
+in preference to new ones and only findings outside the baseline fail.
+`python -m pyteastrainer.cover .coverage --junit junit.xml --pareto 0.95,0.99`
+runs the solver offline on a recorded database.
+
 ## Benchmark
 
 sigmfalyzer: 3049 passed tests with coverage, 27,884 branches merged to
@@ -131,3 +139,6 @@ sigmfalyzer: 3049 passed tests with coverage, 27,884 branches merged to
 All exact runs solved in about 20 s with gap 0. Partial coverage from the
 runtime-budget sweep: 5% of the runtime reaches 97.9% of branches, 10% reaches
 99.6%.
+
+pytest-maxcov selects with Chvátal's greedy rule, the "Greedy" row above, and
+gives no optimality bound; pyteastrainer reports the HiGHS status and gap.
