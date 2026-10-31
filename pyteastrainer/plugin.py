@@ -449,7 +449,7 @@ class Gate:
                     "elements": int(m.weight[cols[~fast[cols]]].sum()),
                 }
             )
-        return sorted(rows, key=lambda r: (r["kind"] == "slow", r["nodeid"]))
+        return sorted(rows, key=lambda r: (r["kind"] != "slow", r["nodeid"]))
 
     def _speed(self, m: cover.Matrix, kept: np.ndarray) -> List[dict]:
         count = np.asarray(m.a[kept].sum(axis=0)).ravel()

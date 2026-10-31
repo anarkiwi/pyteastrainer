@@ -275,11 +275,11 @@ def test_zero_pos():
     assert r.ret == 1
     r.stdout.fnmatch_lines(
         [
-            "  delete test_mod.py::test_slow_but_replaceable (exceeds max time): same "
-            "branches as test_mod.py::test_fast_neg",
             "  too slow: test_mod.py::test_slow_only_count takes * > max 0.20 s; only slow "
             "tests reach mod.py:10-13 — write a test under 0.20 s that reaches these, "
             "then delete test_mod.py::test_slow_only_count",
+            "  delete test_mod.py::test_slow_but_replaceable (exceeds max time): same "
+            "branches as test_mod.py::test_fast_neg",
         ]
     )
     report = _report(pytester)
