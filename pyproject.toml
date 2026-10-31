@@ -20,6 +20,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+mutants = ["mutmut>=3.8", "tqdm>=4.66"]
 test = ["pytest-cov>=7.0", "pytest-xdist>=3.6", "black>=25.1", "pylint>=3.3"]
 
 [project.urls]
@@ -27,13 +28,14 @@ Homepage = "https://github.com/anarkiwi/pyteastrainer"
 
 [project.entry-points.pytest11]
 pyteastrainer = "pyteastrainer.plugin"
+pyteastrainer_mutants = "pyteastrainer.mutants"
 
 [tool.setuptools.packages.find]
 include = ["pyteastrainer*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-p no:pyteastrainer"
+addopts = "-p no:pyteastrainer -p no:pyteastrainer_mutants"
 
 [tool.coverage.run]
 source = ["pyteastrainer"]

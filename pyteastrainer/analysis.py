@@ -9,8 +9,10 @@ Classification (strongest first; each test gets at most one):
 
   duplicate   same coverage AND same exact fingerprint as a kept sibling.
               Pure copy.  Safe to delete.
-  clone       same coverage AND same shape fingerprint (different literals).
-              Same assertion down the same path - one parametrized test.
+  clone       same coverage AND same shape fingerprint (different literals)
+              as a kept test of another function.  Same assertion down the
+              same path - one parametrized test.  Rows of one parametrized
+              function are never clones of each other.
   subsumed    coverage is a strict subset of ONE other test's coverage.
               It cannot fail for any reason the bigger test can't also fail
               for, unless it asserts something the bigger one doesn't.
@@ -59,6 +61,7 @@ class Finding:
 class Metrics:
     tests: int = 0
     analyzed: int = 0
+    not_analyzed: int = 0
     exempt: int = 0
     duplicates: int = 0
     clones: int = 0
@@ -92,6 +95,7 @@ def analyze(tests: List[TestRecord]) -> Analysis:
     m = Metrics(tests=len(tests))
     recs = [t for t in tests if t.elements]
     m.analyzed = len(recs)
+    m.not_analyzed = m.tests - m.analyzed
     m.exempt = sum(t.exempt for t in recs)
     an = Analysis(metrics=m)
     if not recs:
@@ -146,6 +150,8 @@ def analyze(tests: List[TestRecord]) -> Analysis:
             group.sort(key=lambda i: _prefer_keep(recs[i]))
             keep = group[0]
             for i in group[1:]:
+                if recs[i].base == recs[keep].base:
+                    continue
                 flagged[i] = Finding(
                     recs[i].nodeid,
                     "clone",

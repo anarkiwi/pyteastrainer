@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -157,11 +159,27 @@ def _opt(config: pytest.Config, name: str, cast=str):
 # Plugin
 # --------------------------------------------------------------------------- #
 class StrainerPlugin:
+    WORDS = {
+        "equiv": "coverage-equivalent",
+        "same": "coverage",
+        "unique": "covers something nothing else does",
+        "none": "recorded no measured coverage",
+    }
+
+    @property
+    def mode(self) -> str:
+        return "branch" if self.branch else "line"
+
+    @property
+    def unit(self) -> str:
+        return {"branch": "branches"}.get(self.mode, self.mode + "s")
+
     def __init__(self, config: pytest.Config) -> None:
         self.config = config
         self.cov = None  # our own coverage.Coverage
         self.cov_from_pytest_cov = False
         self.data_file: Optional[Path] = None
+        self.tmpdir: Optional[str] = None
         self.branch = bool(
             config.getoption("--strain-branch") or config.getini("strain_branch")
         )
@@ -205,7 +223,12 @@ class StrainerPlugin:
         clear_cache()
         if self._pytest_cov_data_file() is not None:
             return
-        cache_dir = self.config.cache.mkdir("pyteastrainer")
+        cache = getattr(self.config, "cache", None)
+        if cache is None:
+            self.tmpdir = tempfile.mkdtemp(prefix="pyteastrainer-")
+            cache_dir = Path(self.tmpdir)
+        else:
+            cache_dir = cache.mkdir("pyteastrainer")
         self.data_file = cache_dir / "coverage.sqlite"
         if self.data_file.exists():
             self.data_file.unlink()
@@ -300,6 +323,9 @@ class StrainerPlugin:
         except Exception as exc:  # pylint: disable=broad-exception-caught
             self.notes.append(f"could not read coverage data: {exc!r}")
             return
+        finally:
+            if self.tmpdir is not None:
+                shutil.rmtree(self.tmpdir, ignore_errors=True)
         self._finish(session, per)
 
     def _finish(self, session: pytest.Session, per: Dict[str, set]) -> None:
@@ -408,7 +434,7 @@ class StrainerPlugin:
         payload = {
             "version": REPORT_VERSION,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "mode": "branch" if self.branch else "line",
+            "mode": self.mode,
             "source": "pytest-cov" if self.cov_from_pytest_cov else "pyteastrainer",
             "metrics": an.metrics.as_dict(),
             "gate": {
@@ -456,14 +482,18 @@ class StrainerPlugin:
             "--strain-warn-only"
         )
         tr.write_sep("=", "pyteastrainer", red=failed, green=not self.violations)
-        mode = "branches" if self.branch else "lines"
         tr.write_line(
-            f"  analyzed {m.analyzed} passed tests over {m.elements} {mode}; "
-            f"a coverage-equivalent suite needs {m.minimal_suite} "
+            f"  analyzed {m.analyzed} passed tests over {m.elements} {self.unit}; "
+            f"a {self.WORDS['equiv']} suite needs {m.minimal_suite} "
             f"(redundancy {m.redundancy_ratio:.1%})"
         )
         rows = [
-            ("duplicate", m.duplicates, "identical coverage and body", "delete"),
+            (
+                "duplicate",
+                m.duplicates,
+                f"identical {self.WORDS['same']} and body",
+                "delete",
+            ),
             (
                 "clone",
                 m.clones,
@@ -477,11 +507,16 @@ class StrainerPlugin:
                 "review/delete",
             ),
             ("redundant", m.redundant, "nothing beyond the union of others", "review"),
-            ("essential", m.essential, "covers something nothing else does", "keep"),
+            ("essential", m.essential, self.WORDS["unique"], "keep"),
             ("exempt", m.exempt, "@pytest.mark.strain_exempt", "keep"),
         ]
         for name, n, what, action in rows:
             tr.write_line(f"  {name:<10}{n:>6}   {what:<40} -> {action}")
+        if m.not_analyzed:
+            tr.write_line(
+                f"  {'not analyzed':<12}{m.not_analyzed:>4}   "
+                f"passed but {self.WORDS['none']}"
+            )
 
         show = _opt(self.config, "show", int)
         show = 20 if show is None else show

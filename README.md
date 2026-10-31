@@ -14,8 +14,8 @@ pytest --strain
 ================================= pyteastrainer =================================
   analyzed 22 passed tests over 24 lines; a coverage-equivalent suite needs 9 (redundancy 59.1%)
   duplicate      3   identical coverage and body              -> delete
-  clone          4   same path & assertions, other literals   -> parametrize
-  subsumed       6   strict subset of one other test          -> review/delete
+  clone          3   same path & assertions, other literals   -> parametrize
+  subsumed       7   strict subset of one other test          -> review/delete
   redundant      0   nothing beyond the union of others       -> review
   essential      8   covers something nothing else does       -> keep
   exempt         1   @pytest.mark.strain_exempt                -> keep
@@ -54,7 +54,7 @@ Then each test gets at most one label, strongest first:
 | label | meaning | default gate |
 |---|---|---|
 | `duplicate` | same coverage **and** same `exact` body as a kept sibling | fail if > 0 |
-| `clone` | same coverage and same `shape`; only literals differ | report |
+| `clone` | same coverage and same `shape` as another test function; only literals differ | report |
 | `subsumed` | coverage is a strict subset of **one** other test | report |
 | `redundant` | nothing beyond the union of all other tests | report |
 | `essential` | covers at least one element nothing else does | keep |
@@ -120,8 +120,8 @@ def test_total_rounds_to_cents(): ...
 
 ```json
 {
-  "metrics": {"analyzed": 22, "duplicates": 3, "clones": 4, "subsumed": 6,
-              "redundant": 0, "essential": 8, "minimal_suite": 9,
+  "metrics": {"analyzed": 22, "not_analyzed": 0, "duplicates": 3, "clones": 3,
+              "subsumed": 7, "redundant": 0, "essential": 8, "minimal_suite": 9,
               "redundancy_ratio": 0.5909},
   "gate": {"passed": false, "violations": ["duplicates 3 > max 0"]},
   "findings": [
@@ -151,13 +151,40 @@ pytest --strain --cov=src --cov-context=test [--cov-branch]
 Without `--cov-context=test` it refuses to run rather than silently analyze
 nothing.
 
+## Mutation mode (prototype)
+
+```
+pip install -e .[mutants]
+pytest --strain-mutants --strain-source src/pkg
+```
+
+Coverage says where a test went, not what it checked. `--strain-mutants`
+loads the modules under `--strain-source` through
+[mutmut](https://github.com/boxed/mutmut)'s trampolines, records which tests
+reach which function, then runs every reached mutant in a forked child against
+only those tests. A test's elements become the mutants it kills, so the same
+categories mean: `duplicate` kills the same mutants with the same body,
+`subsumed` kills a strict subset of another test's mutants, `essential` kills
+one nothing else does. Tests that reach mutants but kill none are listed as
+`weak`.
+
+| Option | Meaning |
+|---|---|
+| `--strain-jobs N` | concurrent mutant processes (default: CPU count) |
+| `--strain-timeout S` | base seconds per mutant, plus ten times its tests' runtime; a timeout counts as a kill |
+
+Limits: decorated functions (including numba `@njit`) are not mutated; a
+verdict only covers code inside `--strain-source`; `-n` is refused because the
+mode forks its own workers.
+
 ## Limitations
 
 - No `pytest-xdist` yet (`-n` is refused). Per-worker data would need combining.
 - Coverage is not semantics. Two tests on the same path with different
   assertions are both reported as `clone`/`subsumed`; use the marker, the
   thresholds or the ratchet rather than treating every finding as deletable.
-- Only passed tests are analyzed; a failing test's coverage is partial.
+- Only passed tests are analyzed; a failing test's coverage is partial. Passed
+  tests that execute no measured source are counted as `not analyzed`.
 - Static fingerprints come from the test's own function body. Tests whose
   behaviour lives entirely in fixtures look alike to the `exact`/`shape`
   comparison; coverage still separates them.
@@ -176,7 +203,7 @@ can see which finding each pattern produces.
 ## Development
 
 ```
-pip install -e .[test]
+pip install -e .[test,mutants]
 pytest -n auto --cov
 black --check . && pylint pyteastrainer tests
 ```
