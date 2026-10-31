@@ -5,7 +5,7 @@ or should be one parametrized test, and prints the exact changes that make it
 green. The minimal suite is solved exactly as an integer program (HiGHS).
 
 ```
-pip install git+https://github.com/anarkiwi/pyteastrainer
+pip install pyteastrainer
 pytest --strain
 ```
 
