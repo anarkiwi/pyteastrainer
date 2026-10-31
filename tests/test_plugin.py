@@ -142,6 +142,18 @@ def test_no_coverage_test_is_a_violation(project):
     assert report["actions"][0]["kind"] == "no_coverage"
 
 
+def test_exempt_test_with_no_coverage_is_kept(project):
+    pytester = project(
+        'def test_pos():\n    assert classify(1) == "pos"\n'
+        '@pytest.mark.strain_exempt(reason="reads source")\n'
+        "def test_nothing():\n    assert True\n"
+    )
+    r = pytester.runpytest("--strain", "--strain-report", "r.json")
+    assert r.ret == 0
+    report = _report(pytester)
+    assert report["no_coverage"] == [] and report["gate"]["passed"]
+
+
 def test_exempt_twin_makes_the_copy_redundant(project):
     pytester = project(
         DUPES.replace(
