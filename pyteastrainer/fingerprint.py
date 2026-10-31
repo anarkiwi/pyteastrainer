@@ -1,52 +1,33 @@
-"""Static fingerprints of test functions.
+"""Static fingerprints of test bodies and parametrize suggestions for same-shape tests.
 
-Coverage alone can't tell "copy-pasted test" from "same code path, different
-oracle", so every test also gets two structural fingerprints computed from its
-AST:
-
-* ``exact``  - alpha-renamed body with constants kept.  Two tests with the
-               same ``exact`` fingerprint are the same test with the variable
-               names changed (the classic LLM paraphrase).
-* ``shape``  - alpha-renamed body with constants abstracted to their type.
-               Same ``shape`` + same coverage means "same assertion against
-               the same path with different literals": a parametrize
-               candidate, which we call a *clone*.
-
-Parametrized instances share a body, so the runtime parameter values are mixed
-into the ``exact`` fingerprint by the plugin (see ``mix_params``).
+Bodies are normalised (docstrings dropped, single-use temporaries inlined, locally bound
+names alpha-renamed); ``exact`` keeps constants, ``shape`` abstracts them to their type.
 """
 
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
-from dataclasses import dataclass
+from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
-
-@dataclass(frozen=True)
-class StaticFingerprint:
-    exact: str
-    shape: str
-    n_asserts: int
-    lineno: int
+FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
 class _Normalizer(ast.NodeTransformer):
-    """Alpha-rename identifiers and (optionally) abstract constants."""
+    """Alpha-rename locally bound names and optionally abstract constants to their type."""
 
-    def __init__(self, abstract_constants: bool) -> None:
-        self.abstract = abstract_constants
+    def __init__(self, bound: set, abstract: bool) -> None:
+        self.bound, self.abstract = bound, abstract
         self.names: Dict[str, str] = {}
 
     def _rename(self, name: str) -> str:
-        if name.startswith("__") and name.endswith("__"):
+        if name not in self.bound:
             return name
-        if name not in self.names:
-            self.names[name] = f"v{len(self.names)}"
-        return self.names[name]
+        return self.names.setdefault(name, f"v{len(self.names)}")
 
     def visit_Name(self, node: ast.Name) -> ast.AST:
         return ast.copy_location(ast.Name(id=self._rename(node.id), ctx=node.ctx), node)
@@ -56,51 +37,51 @@ class _Normalizer(ast.NodeTransformer):
         node.annotation = None
         return node
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        node.name = self._rename(node.name)
-        node.returns = None
-        self.generic_visit(node)
-        return node
-
-    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
-
     def visit_Constant(self, node: ast.Constant) -> ast.AST:
         if self.abstract:
-            return ast.copy_location(
-                ast.Constant(value=type(node.value).__name__), node
-            )
+            return ast.copy_location(ast.Constant(type(node.value).__name__), node)
         return node
 
-    def visit_Expr(self, node: ast.Expr) -> Optional[ast.AST]:
-        # Drop bare string expressions (docstrings / commentary).
-        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            return None
-        return self.generic_visit(node)
+
+_clone = copy.deepcopy
+
+
+class _FoldSign(ast.NodeTransformer):
+    """Fold ``-3`` into one constant so signed literals align with unsigned ones."""
+
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> ast.AST:
+        self.generic_visit(node)
+        if (
+            isinstance(node.op, ast.USub)
+            and isinstance(node.operand, ast.Constant)
+            and type(node.operand.value) in (int, float, complex)
+        ):
+            return ast.copy_location(ast.Constant(-node.operand.value), node)
+        return node
+
+
+def _body(fn: ast.AST) -> ast.Module:
+    """The function body without bare string expressions (docstrings, commentary)."""
+    keep = [
+        s
+        for s in fn.body
+        if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))
+    ]
+    return _FoldSign().visit(ast.Module(body=_clone(keep), type_ignores=[]))
+
+
+def _dump(mod: ast.Module, abstract: bool) -> str:
+    mod = _clone(mod)
+    bound = {
+        n.id
+        for n in ast.walk(mod)
+        if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load)
+    } | {n.arg for n in ast.walk(mod) if isinstance(n, ast.arg)}
+    return ast.dump(_Normalizer(bound, abstract).visit(mod), annotate_fields=False)
 
 
 def _digest(s: str) -> str:
     return hashlib.blake2b(s.encode(), digest_size=10).hexdigest()
-
-
-def _fingerprint_node(fn: ast.AST) -> StaticFingerprint:
-    n_asserts = sum(isinstance(n, ast.Assert) for n in ast.walk(fn))
-    n_asserts += sum(
-        isinstance(n, ast.withitem)
-        and isinstance(n.context_expr, ast.Call)
-        and ast.unparse(n.context_expr.func).endswith("raises")
-        for n in ast.walk(fn)
-    )
-    body_only = ast.Module(body=list(fn.body), type_ignores=[])  # type: ignore[attr-defined]
-    body_only = _inline_temporaries(_clone(body_only))
-    exact = ast.dump(_Normalizer(False).visit(_clone(body_only)), annotate_fields=False)
-    shape = ast.dump(_Normalizer(True).visit(_clone(body_only)), annotate_fields=False)
-    return StaticFingerprint(
-        _digest(exact), _digest(shape), n_asserts, getattr(fn, "lineno", 0)
-    )
-
-
-def _clone(node: ast.AST) -> ast.AST:
-    return ast.parse(ast.unparse(node))
 
 
 def _inline_temporaries(mod: ast.Module) -> ast.Module:
@@ -147,19 +128,18 @@ def _inline_temporaries(mod: ast.Module) -> ast.Module:
 
 
 @lru_cache(maxsize=None)
-def _index_file(path: str) -> Dict[str, StaticFingerprint]:
-    """Map ``Class::method`` / ``function`` names to fingerprints for a test file."""
+def _index_file(path: str) -> Dict[str, ast.AST]:
+    """Map ``Class::method`` / ``function`` names to their AST nodes for a test file."""
     try:
-        src = Path(path).read_text(encoding="utf-8")
-        tree = ast.parse(src)
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"))
     except (OSError, SyntaxError):
         return {}
-    out: Dict[str, StaticFingerprint] = {}
+    out: Dict[str, ast.AST] = {}
 
     def walk(nodes, prefix: str) -> None:
         for n in nodes:
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                out[prefix + n.name] = _fingerprint_node(n)
+            if isinstance(n, FUNCS):
+                out[prefix + n.name] = n
             elif isinstance(n, ast.ClassDef):
                 walk(n.body, prefix + n.name + "::")
 
@@ -170,14 +150,114 @@ def _index_file(path: str) -> Dict[str, StaticFingerprint]:
 clear_cache = _index_file.cache_clear
 
 
-def fingerprint_for(path: str, qualname: str) -> Optional[StaticFingerprint]:
-    return _index_file(path).get(qualname)
+def _function(root: Path, nodeid: str) -> Optional[ast.AST]:
+    path, _, qual = nodeid.partition("::")
+    return _index_file(str(root / path)).get(qual.split("[", 1)[0])
 
 
-def mix_params(fp: StaticFingerprint, params_repr: str) -> StaticFingerprint:
-    """Fold runtime parameter values into the exact fingerprint."""
-    if not params_repr:
-        return fp
-    return StaticFingerprint(
-        _digest(fp.exact + "|" + params_repr), fp.shape, fp.n_asserts, fp.lineno
+def fingerprint(fn: ast.AST, abstract: bool = False) -> str:
+    return _digest(_dump(_inline_temporaries(_body(fn)), abstract))
+
+
+def fingerprint_for(root: Path, nodeid: str) -> Optional[str]:
+    fn = _function(root, nodeid)
+    return None if fn is None else fingerprint(fn)
+
+
+def _param_name(node: ast.AST, parents: dict, taken: set) -> str:
+    parent = parents.get(id(node))
+    name = parent.arg if isinstance(parent, ast.keyword) else None
+    if not name or name in taken:
+        name = next(f"p{i}" for i in range(len(taken) + 1) if f"p{i}" not in taken)
+    taken.add(name)
+    return name
+
+
+def suggest(fns: List[ast.AST]) -> Optional[str]:
+    """One parametrized test replacing same-shape ``fns``: differing constants become params."""
+    bodies = [_body(fn) for fn in fns]
+    if len({_dump(b, True) for b in bodies}) != 1:
+        bodies = [_inline_temporaries(b) for b in bodies]
+    consts = [[n for n in ast.walk(b) if isinstance(n, ast.Constant)] for b in bodies]
+    columns = sorted(
+        (c for c in zip(*consts) if len({repr(n.value) for n in c}) > 1),
+        key=lambda c: (c[0].lineno, c[0].col_offset),
     )
+    if not columns:
+        return None
+    parents = {id(c): p for p in ast.walk(bodies[0]) for c in ast.iter_child_nodes(p)}
+    taken = {n.id for n in ast.walk(bodies[0]) if isinstance(n, ast.Name)} | {
+        a.arg for a in fns[0].args.args
+    }
+    params: Dict[tuple, str] = {}
+    values: Dict[str, tuple] = {}
+    replace: Dict[int, str] = {}
+    for col in columns:
+        key = tuple(repr(n.value) for n in col)
+        if key not in params:
+            params[key] = _param_name(col[0], parents, taken)
+            values[params[key]] = col
+        replace[id(col[0])] = params[key]
+
+    class _Sub(ast.NodeTransformer):
+        def visit_Constant(self, node: ast.Constant) -> ast.AST:
+            name = replace.get(id(node))
+            return ast.Name(id=name, ctx=ast.Load()) if name else node
+
+    body = _Sub().visit(bodies[0])
+    rows = [
+        [ast.Constant(c[j].value) for c in values.values()] for j in range(len(fns))
+    ]
+    fn = _clone(fns[0])
+    fn.body = body.body
+    fn.args.args.extend(ast.arg(arg=name) for name in params.values())
+    fn.decorator_list.append(
+        ast.Call(
+            func=ast.parse("pytest.mark.parametrize", mode="eval").body,
+            args=[
+                ast.Constant(", ".join(params.values())),
+                ast.List(
+                    [
+                        r[0] if len(params) == 1 else ast.Tuple(r, ast.Load())
+                        for r in rows
+                    ],
+                    ast.Load(),
+                ),
+            ],
+            keywords=[
+                ast.keyword(
+                    "ids", ast.List([ast.Constant(f.name) for f in fns], ast.Load())
+                )
+            ],
+        )
+    )
+    return ast.unparse(fn)
+
+
+def parametrize_groups(
+    root: Path, nodeids: Iterable[str]
+) -> List[Tuple[List[str], str]]:
+    """Same-scope, same-arguments, same-shape unparametrized test functions, with a merge."""
+    groups: Dict[tuple, List[Tuple[str, ast.AST]]] = defaultdict(list)
+    for nid in sorted(set(nodeids)):
+        fn = _function(root, nid)
+        if (
+            "[" in nid
+            or fn is None
+            or any("parametrize" in ast.unparse(d) for d in fn.decorator_list)
+        ):
+            continue
+        path, _, qual = nid.partition("::")
+        key = (
+            path,
+            qual.rpartition("::")[0],
+            ast.unparse(fn.args),
+            fingerprint(fn, True),
+        )
+        groups[key].append((nid, fn))
+    out = []
+    for members in groups.values():
+        code = suggest([fn for _, fn in members]) if len(members) > 1 else None
+        if code:
+            out.append(([nid for nid, _ in members], code))
+    return sorted(out)
