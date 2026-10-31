@@ -1,4 +1,5 @@
 import json
+import sys
 import pytest
 
 pytest_plugins = ["pytester"]
@@ -289,7 +290,8 @@ def test_xdist_is_rejected(pytester):
     r.stderr.fnmatch_lines(["*does not support xdist*"])
 
 
-def test_pytest_cov_contexts_are_reused(pytester):
+def test_pytest_cov_contexts_are_reused(pytester, monkeypatch):
+    monkeypatch.setenv("COVERAGE_CORE", "ctrace")
     _project(pytester, DUPES)
     r = pytester.runpytest_subprocess(
         "--strain", "--strain-report", "r.json", "--cov=.", "--cov-context=test"
@@ -326,3 +328,13 @@ def test_neg_pos():
     r = pytester.runpytest("--strain")
     assert r.ret == 0
     r.stdout.fnmatch_lines(["*suite needs 2 (redundancy 33.3%)*", "*redundant *3*"])
+
+
+def test_pytest_cov_sysmon_core_is_rejected(pytester, monkeypatch):
+    if not hasattr(sys, "monitoring"):
+        pytest.skip("sys.monitoring needs Python 3.12+")
+    monkeypatch.setenv("COVERAGE_CORE", "sysmon")
+    _project(pytester, DUPES)
+    r = pytester.runpytest_subprocess("--strain", "--cov=.", "--cov-context=test")
+    assert r.ret == pytest.ExitCode.USAGE_ERROR
+    r.stderr.fnmatch_lines(["*sys.monitoring core*COVERAGE_CORE=ctrace*"])

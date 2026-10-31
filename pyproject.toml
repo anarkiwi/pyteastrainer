@@ -37,6 +37,7 @@ addopts = "-p no:pyteastrainer"
 
 [tool.coverage.run]
 source = ["pyteastrainer"]
+core = "ctrace"
 
 [tool.coverage.report]
 fail_under = 85

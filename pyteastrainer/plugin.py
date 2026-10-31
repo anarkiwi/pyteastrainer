@@ -191,6 +191,12 @@ class StrainerPlugin:
                 "contexts. Add --cov-context=test (or drop --cov to let "
                 "pyteastrainer trace on its own)."
             )
+        if dict(cov.sys_info()).get("core") == "SysMonitor":
+            raise pytest.UsageError(
+                "pyteastrainer: pytest-cov is using coverage's sys.monitoring core, "
+                "which cannot record per-test contexts. Set COVERAGE_CORE=ctrace "
+                "(or drop --cov to let pyteastrainer trace on its own)."
+            )
         self.cov_from_pytest_cov = True
         self.branch = bool(cov.config.branch)
         return Path(cov.get_data().data_filename())
@@ -212,6 +218,7 @@ class StrainerPlugin:
             config_file=False,
         )
         self.cov.set_option("run:relative_files", False)
+        self.cov.set_option("run:core", "ctrace")
         self.cov.start()
         self.cov.switch_context("")
 
