@@ -1,6 +1,7 @@
 import ast
 import json
 import re
+import sys
 
 import pytest
 
@@ -393,6 +394,7 @@ def test_pytest_cov_without_contexts_is_rejected(project):
     r.stderr.fnmatch_lines(["*not recording per-test contexts*"])
 
 
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="sys.monitoring needs 3.12")
 def test_pytest_cov_sysmon_core_is_rejected(project, monkeypatch):
     monkeypatch.setenv("COVERAGE_CORE", "sysmon")
     pytester = project(DUPES)
