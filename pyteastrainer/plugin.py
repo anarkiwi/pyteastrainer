@@ -6,27 +6,35 @@ body, classifies redundancy, and sets a non-zero exit status when the gate
 fails.  Designed to sit in CI so that an agent cannot land a test that adds
 nothing.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import sqlite3
-import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import coverage
 import pytest
+from coverage.numbits import numbits_to_nums
 
 from .analysis import Analysis, TestRecord, analyze
-from .fingerprint import fingerprint_for, mix_params
+from .fingerprint import clear_cache, fingerprint_for, mix_params
 
 REPORT_VERSION = 1
 
 TEST_FILE_OMIT = [
-    "*/tests/*", "*/test/*", "*/test_*.py", "*_test.py", "*/conftest.py",
-    "*/.venv/*", "*/venv/*", "*/site-packages/*",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "*"),   # this plugin
+    "*/tests/*",
+    "*/test/*",
+    "*/test_*.py",
+    "*_test.py",
+    "*/conftest.py",
+    "*/.venv/*",
+    "*/venv/*",
+    "*/site-packages/*",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "*"),  # this plugin
 ]
 _SELF_DIR = os.path.dirname(os.path.abspath(__file__)).replace("\\", "/") + "/"
 
@@ -36,33 +44,92 @@ _SELF_DIR = os.path.dirname(os.path.abspath(__file__)).replace("\\", "/") + "/"
 # --------------------------------------------------------------------------- #
 def pytest_addoption(parser: pytest.Parser) -> None:
     g = parser.getgroup("pyteastrainer", "redundant-test gate")
-    g.addoption("--strain", action="store_true", default=False,
-                help="Collect per-test coverage and fail on redundant tests.")
-    g.addoption("--strain-source", action="append", default=None, metavar="PATH",
-                help="Production source to measure (repeatable). Default: rootdir "
-                     "minus test files.")
-    g.addoption("--strain-branch", action="store_true", default=False,
-                help="Fingerprint on branch arcs instead of lines (slower, stricter).")
-    g.addoption("--strain-max-duplicates", type=int, default=None, metavar="N",
-                help="Fail if more than N duplicate tests. Default 0.")
-    g.addoption("--strain-max-clones", type=int, default=None, metavar="N",
-                help="Fail if more than N clone tests (same path, different literals).")
-    g.addoption("--strain-max-subsumed", type=int, default=None, metavar="N",
-                help="Fail if more than N tests are strict subsets of another test.")
-    g.addoption("--strain-max-redundancy", type=float, default=None, metavar="RATIO",
-                help="Fail if 1 - minimal_suite/analyzed exceeds RATIO (0-1).")
-    g.addoption("--strain-baseline", default=None, metavar="FILE",
-                help="Ratchet file: fail if any redundancy metric is worse than it.")
-    g.addoption("--strain-update-baseline", action="store_true", default=False,
-                help="Write current metrics to the baseline file (never fails).")
-    g.addoption("--strain-tolerance", type=float, default=None, metavar="RATIO",
-                help="Slack allowed over the baseline redundancy ratio. Default 0.")
-    g.addoption("--strain-report", default=None, metavar="FILE",
-                help="Write the full machine-readable report (JSON) here.")
-    g.addoption("--strain-show", type=int, default=None, metavar="N",
-                help="How many findings to print in the terminal. Default 20.")
-    g.addoption("--strain-warn-only", action="store_true", default=False,
-                help="Report but never change the exit status.")
+    g.addoption(
+        "--strain",
+        action="store_true",
+        default=False,
+        help="Collect per-test coverage and fail on redundant tests.",
+    )
+    g.addoption(
+        "--strain-source",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="Production source to measure (repeatable). Default: rootdir "
+        "minus test files.",
+    )
+    g.addoption(
+        "--strain-branch",
+        action="store_true",
+        default=False,
+        help="Fingerprint on branch arcs instead of lines (slower, stricter).",
+    )
+    g.addoption(
+        "--strain-max-duplicates",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Fail if more than N duplicate tests. Default 0.",
+    )
+    g.addoption(
+        "--strain-max-clones",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Fail if more than N clone tests (same path, different literals).",
+    )
+    g.addoption(
+        "--strain-max-subsumed",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Fail if more than N tests are strict subsets of another test.",
+    )
+    g.addoption(
+        "--strain-max-redundancy",
+        type=float,
+        default=None,
+        metavar="RATIO",
+        help="Fail if 1 - minimal_suite/analyzed exceeds RATIO (0-1).",
+    )
+    g.addoption(
+        "--strain-baseline",
+        default=None,
+        metavar="FILE",
+        help="Ratchet file: fail if any redundancy metric is worse than it.",
+    )
+    g.addoption(
+        "--strain-update-baseline",
+        action="store_true",
+        default=False,
+        help="Write current metrics to the baseline file (never fails).",
+    )
+    g.addoption(
+        "--strain-tolerance",
+        type=float,
+        default=None,
+        metavar="RATIO",
+        help="Slack allowed over the baseline redundancy ratio. Default 0.",
+    )
+    g.addoption(
+        "--strain-report",
+        default=None,
+        metavar="FILE",
+        help="Write the full machine-readable report (JSON) here.",
+    )
+    g.addoption(
+        "--strain-show",
+        type=int,
+        default=None,
+        metavar="N",
+        help="How many findings to print in the terminal. Default 20.",
+    )
+    g.addoption(
+        "--strain-warn-only",
+        action="store_true",
+        default=False,
+        help="Report but never change the exit status.",
+    )
 
     parser.addini("strain_source", type="linelist", help="Production source paths.")
     parser.addini("strain_branch", type="bool", default=False, help="Use branch arcs.")
@@ -92,11 +159,13 @@ def _opt(config: pytest.Config, name: str, cast=str):
 class StrainerPlugin:
     def __init__(self, config: pytest.Config) -> None:
         self.config = config
-        self.cov = None                       # our own coverage.Coverage
+        self.cov = None  # our own coverage.Coverage
         self.cov_from_pytest_cov = False
         self.data_file: Optional[Path] = None
-        self.branch = bool(config.getoption("--strain-branch") or config.getini("strain_branch"))
-        self.params: Dict[str, str] = {}      # nodeid -> repr(callspec.params)
+        self.branch = bool(
+            config.getoption("--strain-branch") or config.getini("strain_branch")
+        )
+        self.params: Dict[str, str] = {}  # nodeid -> repr(callspec.params)
         self.exempt: set = set()
         self.passed: set = set()
         self.durations: Dict[str, float] = {}
@@ -113,21 +182,27 @@ class StrainerPlugin:
         cov = getattr(ctrl, "cov", None)
         if cov is None:
             return None
-        per_test = (self.config.getoption("cov_context", None) == "test"
-                    or getattr(cov.config, "dynamic_context", None))
+        per_test = self.config.getoption("cov_context", None) == "test" or getattr(
+            cov.config, "dynamic_context", None
+        )
         if not per_test:
             raise pytest.UsageError(
                 "pyteastrainer: pytest-cov is active but not recording per-test "
                 "contexts. Add --cov-context=test (or drop --cov to let "
                 "pyteastrainer trace on its own)."
             )
+        if dict(cov.sys_info()).get("core") == "SysMonitor":
+            raise pytest.UsageError(
+                "pyteastrainer: pytest-cov is using coverage's sys.monitoring core, "
+                "which cannot record per-test contexts. Set COVERAGE_CORE=ctrace "
+                "(or drop --cov to let pyteastrainer trace on its own)."
+            )
         self.cov_from_pytest_cov = True
         self.branch = bool(cov.config.branch)
         return Path(cov.get_data().data_filename())
 
-    def pytest_sessionstart(self, session: pytest.Session) -> None:
-        import coverage
-
+    def pytest_sessionstart(self) -> None:
+        clear_cache()
         if self._pytest_cov_data_file() is not None:
             return
         cache_dir = self.config.cache.mkdir("pyteastrainer")
@@ -143,17 +218,15 @@ class StrainerPlugin:
             config_file=False,
         )
         self.cov.set_option("run:relative_files", False)
+        self.cov.set_option("run:core", "ctrace")
         self.cov.start()
         self.cov.switch_context("")
 
     @pytest.hookimpl(hookwrapper=True)
-    def pytest_runtest_protocol(self, item: pytest.Item, nextitem):
+    def pytest_runtest_protocol(self, item: pytest.Item):
         callspec = getattr(item, "callspec", None)
         if callspec is not None:
-            try:
-                self.params[item.nodeid] = repr(sorted(callspec.params.items()))
-            except Exception:  # unorderable params
-                self.params[item.nodeid] = repr(callspec.params)
+            self.params[item.nodeid] = repr(sorted(callspec.params.items()))
         if item.get_closest_marker("strain_exempt"):
             self.exempt.add(item.nodeid)
         if self.cov is not None:
@@ -172,8 +245,6 @@ class StrainerPlugin:
 
     # ---- read coverage data ------------------------------------------------
     def _per_test_elements(self) -> Dict[str, set]:
-        from coverage.numbits import numbits_to_nums
-
         if self.cov is not None:
             self.cov.stop()
             self.cov.save()
@@ -185,13 +256,15 @@ class StrainerPlugin:
 
         con = sqlite3.connect(str(path))
         try:
-            files = {fid: p for fid, p in con.execute("SELECT id, path FROM file")}
-            contexts = {cid: c for cid, c in con.execute("SELECT id, context FROM context")}
-            keep_file = {fid for fid, p in files.items() if not _looks_like_test_file(p)}
+            files = dict(con.execute("SELECT id, path FROM file"))
+            contexts = dict(con.execute("SELECT id, context FROM context"))
+            keep_file = {
+                fid for fid, p in files.items() if not _looks_like_test_file(p)
+            }
             per: Dict[str, set] = {}
 
             def ctx_to_nodeid(c: str) -> Optional[str]:
-                c = c.split("|", 1)[0]           # pytest-cov appends |setup/|run/|teardown
+                c = c.split("|", 1)[0]  # pytest-cov appends |setup/|run/|teardown
                 return c or None
 
             if self.branch:
@@ -221,13 +294,15 @@ class StrainerPlugin:
             con.close()
 
     # ---- analysis + gate ----------------------------------------------------
-    def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
+    def pytest_sessionfinish(self, session: pytest.Session) -> None:
         try:
             per = self._per_test_elements()
-        except Exception as exc:  # never break the run because of us
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             self.notes.append(f"could not read coverage data: {exc!r}")
             return
+        self._finish(session, per)
 
+    def _finish(self, session: pytest.Session, per: Dict[str, set]) -> None:
         records: List[TestRecord] = []
         for item in session.items:
             nid = item.nodeid
@@ -238,13 +313,15 @@ class StrainerPlugin:
             static = fingerprint_for(path, qual)
             if static is not None:
                 static = mix_params(static, self.params.get(nid, ""))
-            records.append(TestRecord(
-                nodeid=nid,
-                elements=frozenset(per.get(nid, ())),
-                static=static,
-                exempt=nid in self.exempt,
-                duration=self.durations.get(nid, 0.0),
-            ))
+            records.append(
+                TestRecord(
+                    nodeid=nid,
+                    elements=frozenset(per.get(nid, ())),
+                    static=static,
+                    exempt=nid in self.exempt,
+                    duration=self.durations.get(nid, 0.0),
+                )
+            )
         if not records:
             self.notes.append("no passed tests with coverage to analyze")
             return
@@ -268,7 +345,7 @@ class StrainerPlugin:
 
         max_dup = _opt(c, "max_duplicates", int)
         if max_dup is None and not baseline_exists:
-            max_dup = 0          # hard default; a baseline takes over on legacy suites
+            max_dup = 0  # hard default; a baseline takes over on legacy suites
         if max_dup is not None and m.duplicates > max_dup:
             self.violations.append(f"duplicates {m.duplicates} > max {max_dup}")
         max_clones = _opt(c, "max_clones", int)
@@ -280,37 +357,50 @@ class StrainerPlugin:
         max_red = _opt(c, "max_redundancy", float)
         if max_red is not None and m.redundancy_ratio > max_red:
             self.violations.append(
-                f"redundancy {m.redundancy_ratio:.1%} > max {max_red:.1%}")
+                f"redundancy {m.redundancy_ratio:.1%} > max {max_red:.1%}"
+            )
 
         if baseline_path:
             p = _resolve(c, baseline_path)
             if not p.exists():
                 self.notes.append(
-                    f"baseline {p} does not exist; run once with --strain-update-baseline")
+                    f"baseline {p} does not exist; run once with --strain-update-baseline"
+                )
             else:
-                doc = json.loads(p.read_text())
+                doc = json.loads(p.read_text(encoding="utf-8"))
                 base = doc.get("metrics", {})
                 tol = _opt(c, "tolerance", float) or 0.0
                 improved = False
                 for key in ("duplicates", "clones", "subsumed", "redundant"):
                     if key in base and getattr(m, key) > base[key]:
                         self.violations.append(
-                            f"{key} {getattr(m, key)} > baseline {base[key]}")
+                            f"{key} {getattr(m, key)} > baseline {base[key]}"
+                        )
                     elif key in base and getattr(m, key) < base[key]:
                         improved = True
-                if "redundancy_ratio" in base and \
-                        m.redundancy_ratio > base["redundancy_ratio"] + tol:
+                if (
+                    "redundancy_ratio" in base
+                    and m.redundancy_ratio > base["redundancy_ratio"] + tol
+                ):
                     self.violations.append(
                         f"redundancy {m.redundancy_ratio:.1%} > baseline "
                         f"{base['redundancy_ratio']:.1%}"
-                        + (f" (+{tol:.1%} tolerance)" if tol else ""))
+                        + (f" (+{tol:.1%} tolerance)" if tol else "")
+                    )
                 known = set(doc.get("flagged", []))
-                new = [f.nodeid for f in self.analysis.findings if f.nodeid not in known]
+                new = [
+                    f.nodeid for f in self.analysis.findings if f.nodeid not in known
+                ]
                 if new and self.violations:
-                    self.notes.append("new since baseline: " + ", ".join(_short(n, 70) for n in new[:10]))
+                    self.notes.append(
+                        "new since baseline: "
+                        + ", ".join(_short(n, 70) for n in new[:10])
+                    )
                 if improved and not self.violations:
                     self.notes.append(
-                        "suite got leaner than the baseline; lock it in with --strain-update-baseline")
+                        "suite got leaner than the baseline; "
+                        "lock it in with --strain-update-baseline"
+                    )
 
     def _write_outputs(self) -> None:
         c = self.config
@@ -321,7 +411,10 @@ class StrainerPlugin:
             "mode": "branch" if self.branch else "line",
             "source": "pytest-cov" if self.cov_from_pytest_cov else "pyteastrainer",
             "metrics": an.metrics.as_dict(),
-            "gate": {"passed": not self.violations, "violations": list(self.violations)},
+            "gate": {
+                "passed": not self.violations,
+                "violations": list(self.violations),
+            },
             "findings": [f.__dict__ for f in an.findings],
             "kept_for": an.kept_for,
         }
@@ -329,20 +422,27 @@ class StrainerPlugin:
         if rp:
             self.report_path = Path(rp) if os.path.isabs(rp) else c.rootpath / rp
             self.report_path.parent.mkdir(parents=True, exist_ok=True)
-            self.report_path.write_text(json.dumps(payload, indent=2))
+            self.report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
         if c.getoption("--strain-update-baseline"):
             bp = _resolve(c, _opt(c, "baseline") or ".strain-baseline.json")
-            bp.write_text(json.dumps({
-                "version": REPORT_VERSION,
-                "metrics": an.metrics.as_dict(),
-                "flagged": sorted(f.nodeid for f in an.findings),
-            }, indent=2) + "\n")
+            bp.write_text(
+                json.dumps(
+                    {
+                        "version": REPORT_VERSION,
+                        "metrics": an.metrics.as_dict(),
+                        "flagged": sorted(f.nodeid for f in an.findings),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             self.notes.append(f"baseline written to {bp}")
             self.baseline_written = True
 
     # ---- terminal ----------------------------------------------------------
-    def pytest_terminal_summary(self, terminalreporter, exitstatus: int) -> None:
+    def pytest_terminal_summary(self, terminalreporter) -> None:
         tr = terminalreporter
         an = self.analysis
         if an is None:
@@ -352,7 +452,9 @@ class StrainerPlugin:
                     tr.write_line(f"  {n}")
             return
         m = an.metrics
-        failed = bool(self.violations) and not self.config.getoption("--strain-warn-only")
+        failed = bool(self.violations) and not self.config.getoption(
+            "--strain-warn-only"
+        )
         tr.write_sep("=", "pyteastrainer", red=failed, green=not self.violations)
         mode = "branches" if self.branch else "lines"
         tr.write_line(
@@ -362,8 +464,18 @@ class StrainerPlugin:
         )
         rows = [
             ("duplicate", m.duplicates, "identical coverage and body", "delete"),
-            ("clone", m.clones, "same path & assertions, other literals", "parametrize"),
-            ("subsumed", m.subsumed, "strict subset of one other test", "review/delete"),
+            (
+                "clone",
+                m.clones,
+                "same path & assertions, other literals",
+                "parametrize",
+            ),
+            (
+                "subsumed",
+                m.subsumed,
+                "strict subset of one other test",
+                "review/delete",
+            ),
             ("redundant", m.redundant, "nothing beyond the union of others", "review"),
             ("essential", m.essential, "covers something nothing else does", "keep"),
             ("exempt", m.exempt, "@pytest.mark.strain_exempt", "keep"),
@@ -378,9 +490,12 @@ class StrainerPlugin:
             for f in an.findings[:show]:
                 sib = f.because_of[0] if f.because_of else "-"
                 tr.write_line(f"  {f.kind:<10}{_short(f.nodeid)}")
-                tr.write_line(f"            {'==' if f.kind in ('duplicate', 'clone') else '<='} {_short(sib)}")
+                rel = "==" if f.kind in ("duplicate", "clone") else "<="
+                tr.write_line(f"            {rel} {_short(sib)}")
             if len(an.findings) > show:
-                tr.write_line(f"  ... {len(an.findings) - show} more (see --strain-report)")
+                tr.write_line(
+                    f"  ... {len(an.findings) - show} more (see --strain-report)"
+                )
 
         for n in self.notes:
             tr.write_line(f"  note: {n}")
@@ -390,13 +505,18 @@ class StrainerPlugin:
             tr.write_line("")
             verdict = "WARN" if self.config.getoption("--strain-warn-only") else "FAIL"
             for v in self.violations:
-                tr.write_line(f"  {verdict}: {v}", red=not self.config.getoption("--strain-warn-only"),
-                              yellow=self.config.getoption("--strain-warn-only"))
+                tr.write_line(
+                    f"  {verdict}: {v}",
+                    red=not self.config.getoption("--strain-warn-only"),
+                    yellow=self.config.getoption("--strain-warn-only"),
+                )
             if failed:
                 tr.write_line(
                     "  Delete or merge the flagged tests, or mark a test "
                     "@pytest.mark.strain_exempt(reason=...) if it asserts something "
-                    "coverage can't see.", red=True)
+                    "coverage can't see.",
+                    red=True,
+                )
 
 
 def _resolve(config: pytest.Config, p: str) -> Path:
@@ -405,28 +525,36 @@ def _resolve(config: pytest.Config, p: str) -> Path:
 
 
 def _short(nodeid: str, width: int = 96) -> str:
-    return nodeid if len(nodeid) <= width else "..." + nodeid[-(width - 3):]
+    return nodeid if len(nodeid) <= width else "..." + nodeid[-(width - 3) :]
 
 
 def _looks_like_test_file(path: str) -> bool:
     p = path.replace("\\", "/")
     name = p.rsplit("/", 1)[-1]
     return (
-        "/tests/" in p or "/test/" in p
-        or name.startswith("test_") or name.endswith("_test.py")
+        "/tests/" in p
+        or "/test/" in p
+        or name.startswith("test_")
+        or name.endswith("_test.py")
         or name == "conftest.py"
-        or "/site-packages/" in p or p.startswith(_SELF_DIR)
+        or "/site-packages/" in p
+        or p.startswith(_SELF_DIR)
     )
 
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
-        "strain_exempt(reason): never flag this test as redundant, and never use it to flag a copy; it still counts "
-        "toward the coverage universe.",
+        "strain_exempt(reason): never flag this test as redundant, and never use it "
+        "to flag a copy; it still counts toward the coverage universe.",
     )
     if not config.getoption("--strain"):
         return
-    if config.pluginmanager.hasplugin("xdist") and config.getoption("dist", "no") != "no":
-        raise pytest.UsageError("pyteastrainer does not support xdist workers yet; run without -n.")
+    if (
+        config.pluginmanager.hasplugin("xdist")
+        and config.getoption("dist", "no") != "no"
+    ):
+        raise pytest.UsageError(
+            "pyteastrainer does not support xdist workers yet; run without -n."
+        )
     config.pluginmanager.register(StrainerPlugin(config), "pyteastrainer_gate")

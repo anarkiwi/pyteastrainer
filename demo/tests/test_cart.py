@@ -4,6 +4,7 @@ Legit tests are at the top. Everything under "BLOAT" is the kind of thing
 that accumulates: paraphrased copies, same-assertion-different-literal
 clones, and "smaller" tests that a bigger one already proves.
 """
+
 import pytest
 
 from shop.cart import Cart, CartError
@@ -134,11 +135,14 @@ def test_subtotal_single():
 
 
 # 4. Parametrize with duplicate rows (identical values) and clone rows.
-@pytest.mark.parametrize("price,expected", [
-    (10.0, 15.0),
-    (20.0, 25.0),
-    (10.0, 15.0),      # agent re-added an existing case
-])
+@pytest.mark.parametrize(
+    "price,expected",
+    [
+        (10.0, 15.0),
+        (20.0, 25.0),
+        (10.0, 15.0),  # agent re-added an existing case
+    ],
+)
 def test_total_param(price, expected):
     c = Cart()
     c.add("a", price)

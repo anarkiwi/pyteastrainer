@@ -21,6 +21,7 @@ Classification (strongest first; each test gets at most one):
 Only ``duplicate`` is a hard default gate; the others are reported and can
 be gated by threshold or ratchet.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -47,8 +48,8 @@ class TestRecord:
 @dataclass
 class Finding:
     nodeid: str
-    kind: str                      # duplicate | clone | subsumed | redundant
-    because_of: List[str]          # the sibling(s) that make it redundant
+    kind: str  # duplicate | clone | subsumed | redundant
+    because_of: List[str]  # the sibling(s) that make it redundant
     detail: str
     elements: int
     unique_elements: int = 0
@@ -66,7 +67,7 @@ class Metrics:
     essential: int = 0
     minimal_suite: int = 0
     elements: int = 0
-    redundancy_ratio: float = 0.0   # 1 - minimal_suite / analyzed
+    redundancy_ratio: float = 0.0  # 1 - minimal_suite / analyzed
 
     def as_dict(self) -> Dict[str, float]:
         return dict(self.__dict__)
@@ -76,13 +77,15 @@ class Metrics:
 class Analysis:
     metrics: Metrics
     findings: List[Finding] = field(default_factory=list)
-    kept_for: Dict[str, List[str]] = field(default_factory=dict)  # kept nodeid -> flagged siblings
+    kept_for: Dict[str, List[str]] = field(
+        default_factory=dict
+    )  # kept nodeid -> flagged siblings
 
 
 def _prefer_keep(t: TestRecord) -> tuple:
     """Sort key: which test survives a duplicate/clone cluster."""
     n_asserts = t.static.n_asserts if t.static else 0
-    return (not t.exempt, -n_asserts, "[" in t.nodeid, t.nodeid)
+    return (-n_asserts, "[" in t.nodeid, t.nodeid)
 
 
 def analyze(tests: List[TestRecord]) -> Analysis:
@@ -127,10 +130,10 @@ def analyze(tests: List[TestRecord]) -> Analysis:
             group.sort(key=lambda i: _prefer_keep(recs[i]))
             keep = group[0]
             for i in group[1:]:
-                if recs[i].exempt:
-                    continue
                 flagged[i] = Finding(
-                    recs[i].nodeid, "duplicate", [recs[keep].nodeid],
+                    recs[i].nodeid,
+                    "duplicate",
+                    [recs[keep].nodeid],
                     "identical coverage and identical body (modulo names)",
                     len(recs[i].elements),
                 )
@@ -143,10 +146,10 @@ def analyze(tests: List[TestRecord]) -> Analysis:
             group.sort(key=lambda i: _prefer_keep(recs[i]))
             keep = group[0]
             for i in group[1:]:
-                if recs[i].exempt:
-                    continue
                 flagged[i] = Finding(
-                    recs[i].nodeid, "clone", [recs[keep].nodeid],
+                    recs[i].nodeid,
+                    "clone",
+                    [recs[keep].nodeid],
                     "identical coverage and identical body shape; only literals differ "
                     "(merge into one @pytest.mark.parametrize)",
                     len(recs[i].elements),
@@ -155,10 +158,11 @@ def analyze(tests: List[TestRecord]) -> Analysis:
 
     # --- 2. subsumed / redundant / essential ------------------------------
     # Re-index without the duplicate/clone members so a survivor of a cluster
-    # is not then declared redundant because of the copies it just beat.
+    # is not then declared redundant because of the copies it just beat, and
+    # without exempt tests, which must never be the reason another is flagged.
     live: Dict[int, Set[int]] = defaultdict(set)
     for i, t in enumerate(recs):
-        if i not in flagged:
+        if i not in flagged and not t.exempt:
             for e in t.elements:
                 live[e].add(i)
     unique_count: List[int] = [0] * len(recs)
@@ -186,7 +190,9 @@ def analyze(tests: List[TestRecord]) -> Analysis:
             strict.sort(key=lambda j: (len(recs[j].elements), recs[j].nodeid))
             big = recs[strict[0]]
             flagged[i] = Finding(
-                t.nodeid, "subsumed", [big.nodeid],
+                t.nodeid,
+                "subsumed",
+                [big.nodeid],
                 f"every line/branch it executes is also executed by {big.nodeid} "
                 f"({len(t.elements)} of {len(big.elements)} elements)",
                 len(t.elements),
@@ -198,7 +204,9 @@ def analyze(tests: List[TestRecord]) -> Analysis:
                 others |= live[e]
             others.discard(i)
             flagged[i] = Finding(
-                t.nodeid, "redundant", sorted(recs[j].nodeid for j in others)[:5],
+                t.nodeid,
+                "redundant",
+                sorted(recs[j].nodeid for j in others)[:5],
                 "contributes no coverage beyond the union of other tests",
                 len(t.elements),
             )
@@ -211,9 +219,13 @@ def analyze(tests: List[TestRecord]) -> Analysis:
         if t.exempt:
             chosen.add(i)
             remaining -= t.elements
-    gain = {i: len(t.elements & remaining) for i, t in enumerate(recs) if i not in chosen}
+    gain = {
+        i: len(t.elements & remaining) for i, t in enumerate(recs) if i not in chosen
+    }
     while remaining:
-        best = max(gain, key=lambda i: (gain[i], -len(recs[i].elements), recs[i].nodeid))
+        best = max(
+            gain, key=lambda i: (gain[i], -len(recs[i].elements), recs[i].nodeid)
+        )
         if gain[best] == 0:
             break
         chosen.add(best)
@@ -229,12 +241,18 @@ def analyze(tests: List[TestRecord]) -> Analysis:
     m.minimal_suite = len(chosen)
 
     # --- metrics -------------------------------------------------------------
-    attr = {"duplicate": "duplicates", "clone": "clones",
-            "subsumed": "subsumed", "redundant": "redundant"}
+    attr = {
+        "duplicate": "duplicates",
+        "clone": "clones",
+        "subsumed": "subsumed",
+        "redundant": "redundant",
+    }
     for f in flagged.values():
         setattr(m, attr[f.kind], getattr(m, attr[f.kind]) + 1)
     m.essential = m.analyzed - len(flagged) - m.exempt
-    m.redundancy_ratio = round(1 - m.minimal_suite / m.analyzed, 4) if m.analyzed else 0.0
+    m.redundancy_ratio = (
+        round(1 - m.minimal_suite / m.analyzed, 4) if m.analyzed else 0.0
+    )
     for i, f in flagged.items():
         f.unique_elements = unique_count[i]
     order = {"duplicate": 0, "clone": 1, "subsumed": 2, "redundant": 3}
