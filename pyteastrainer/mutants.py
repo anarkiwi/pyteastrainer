@@ -186,7 +186,7 @@ class MutationStrainer(StrainerPlugin):
                 progress.update()
             now = time.monotonic()
             for fd, (pid, mutant, items, done, deadline, _) in list(running.items()):
-                if now < deadline:
+                if now < deadline or done == len(items):
                     continue
                 os.kill(pid, signal.SIGKILL)
                 os.waitpid(pid, 0)
