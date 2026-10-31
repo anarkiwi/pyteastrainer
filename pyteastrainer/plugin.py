@@ -291,7 +291,7 @@ class Gate:
             slow,
         )
         kept = sol.selected
-        no_cov = sorted(passed - set(m.tests))
+        no_cov = sorted(passed - set(m.tests) - self.exempt)
         actions = self._actions(m, kept, slow, limit, passed) + [
             {
                 "nodeid": t,

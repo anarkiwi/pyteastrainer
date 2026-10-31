@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyteastrainer"
-version = "0.2.0"
+version = "0.2.1"
 description = "pytest gate that fails when tests add no coverage, using an exact minimal-suite solver."
 readme = "README.md"
 requires-python = ">=3.11"
