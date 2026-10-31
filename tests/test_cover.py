@@ -73,8 +73,10 @@ def test_exempt_is_forced_and_makes_its_twin_redundant():
 
 
 @pytest.mark.parametrize("accepted,dropped", [(0, "t0"), (1, "t1")])
-def test_baseline_tie_break_drops_the_accepted_test(accepted, dropped):
-    m = _matrix([{0, 1}, {0, 1}, {2}])
+def test_baseline_drops_the_accepted_test_even_when_it_is_faster(accepted, dropped):
+    cost = np.full(3, 2.0)
+    cost[accepted] = 1.0
+    m = _matrix([{0, 1}, {0, 1}, {2}], cost=cost)
     baseline = np.arange(3) == accepted
     kept = _kept(m, cover.min_cover(m, baseline=baseline))
     assert dropped not in kept and len(kept) == 2

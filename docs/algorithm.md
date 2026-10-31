@@ -36,9 +36,10 @@ The objectives are solved lexicographically, each stage adding
 `c_k · x ≤ c_k · x*_k` for the previous optimum before minimising the next:
 
 1. `Σ_{t slow} x_t` — only with `--strain-max-time`; slow means `d_t` above the limit.
-2. the configured order: `Σ x_t` then `Σ d_t x_t` (`count,time`), or the reverse.
-3. `Σ_{t ∈ baseline} x_t` — only with a baseline: among optimal covers, keep
-   the tests that are not already accepted, so accepted tests are dropped first.
+2. `Σ_{t ∈ baseline} x_t` — only with a baseline: accepted tests are dropped
+   wherever other tests cover them. This precedes the duration objective so
+   that timing noise never decides which of two equivalent tests is a violation.
+3. the configured order: `Σ x_t` then `Σ d_t x_t` (`count,time`), or the reverse.
 
 Every stage runs HiGHS with `mip_rel_gap = 0`. The drop list is `{t : x_t = 0}`.
 If `--strain-time-limit` stops a stage, the incumbent still satisfies
@@ -118,8 +119,8 @@ form, and old function names become the `ids`.
 
 ## Baseline and CLI
 
-`--strain-baseline FILE` lists accepted redundant and slow tests; a final
-solver stage minimises the kept baseline tests, so accepted tests are dropped
+`--strain-baseline FILE` lists accepted redundant and slow tests; a solver
+stage minimises the kept baseline tests, so accepted tests are dropped
 in preference to new ones and only findings outside the baseline fail.
 `python -m pyteastrainer.cover .coverage --junit junit.xml --pareto 0.95,0.99`
 runs the solver offline on a recorded database.

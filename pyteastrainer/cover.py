@@ -247,17 +247,17 @@ def min_cover(
     baseline: Optional[np.ndarray] = None,
     slow: Optional[np.ndarray] = None,
 ) -> Solution:
-    """Keep every element covered; lexicographically minimise slow tests kept, ``order``,
-    then baseline tests kept. Exempt tests are forced in. When every other test is
+    """Keep every element covered; lexicographically minimise slow tests kept, baseline
+    tests kept, then ``order``. Exempt tests are forced in. When every other test is
     essential the full suite is the only cover, so no solve is needed.
     """
     n = len(m.tests)
     if (essential(m)[~m.exempt] > 0).all():
         return Solution(np.ones(n, bool), "every test essential", 0.0, True)
-    stages = [slow] + [{"count": np.ones(n), "time": m.cost}[o] for o in order]
-    objectives = [
-        np.asarray(c, float) for c in stages + [baseline] if c is not None and c.any()
+    stages = [slow, baseline] + [
+        {"count": np.ones(n), "time": m.cost}[o] for o in order
     ]
+    objectives = [np.asarray(c, float) for c in stages if c is not None and c.any()]
     x, status, gap, optimal = _lexicographic(
         objectives,
         [LinearConstraint(m.a.T.astype(float).tocsr(), lb=1)],
