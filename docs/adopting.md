@@ -24,7 +24,8 @@ suffix). Any test whose arcs differ needs one of these fixes.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| A module's top-level lines credited to whichever test imported it first | lazy imports | import every package module at collection, in `conftest.py` |
+| A module's top-level lines credited to whichever test imported it first | lazy imports | import every package module at collection, in `conftest.py`, only when `config.getoption("--strain")` is set, so jobs without every optional extra still collect |
+| A module- or session-scoped fixture's lines credited to its first test | fixture scope | run with `--dist loadfile`, so a file's tests stay together and in order at any `-n` |
 | A cached function's body credited to its first caller | `functools.lru_cache` and hand-rolled memo dicts | an autouse fixture that calls `cache_clear()` on each module-level cache and clears module dicts that are empty on import |
 | A once-only branch (`if not _LOADED:`) credited once per worker | module-level flags | reset them in the same fixture |
 | Branches that vary run to run inside one test | seeds from the OS | draw seeds through one helper that is fixed by an environment variable plus the test id when the gated job sets it, and from the OS otherwise; keep one job that runs with OS seeds |
@@ -66,11 +67,21 @@ pytest ... --cov-context=test --strain --strain-update-baseline   # once, in CI'
 
 Commit `.strain-baseline.json` and point `strain_baseline` at it. CI then fails
 only on findings outside it. Generate the baseline with CI's exact command:
-worker count, seed variable and `COVERAGE_CORE=ctrace`.
+worker count, seed variable and `COVERAGE_CORE=ctrace`. Pick the seed by running
+the whole suite under it first; a statistical test can fail under one fixed seed
+and pass under the next.
+
+- A test that fails during the recording has no coverage context, so it is
+  missing from the baseline, and the next green run reports a finding or a
+  "fixed" entry for it. Record only from a run with nothing failing.
+- The image CI runs must contain the baseline file (add it to the Dockerfile's
+  `COPY`) and every file the tests read, or CI collects a different suite.
 
 - Equal-coverage tests are told apart by runtime, so two recordings can accept
   different members of a pair. The solver minimises baseline tests kept before
-  anything else, so it keeps the unaccepted member and the gate stays green.
+  anything else, so it usually keeps the unaccepted member and the gate stays
+  green. A slower CI runner can still surface a new finding from a flip; exempt
+  the test if it checks a contract of its own, otherwise regenerate the baseline.
 - Parametrize merge suggestions are not baselined; set `strain_parametrize = warn`
   until they are dealt with.
 - When the run says baseline entries are fixed, rerun with
