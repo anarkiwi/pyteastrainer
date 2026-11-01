@@ -58,6 +58,7 @@ Per-test contexts are required. On Python 3.14 set `COVERAGE_CORE=ctrace`.
 ## Docs
 
 - [docs/algorithm.md](docs/algorithm.md): formulations, convergence, parametrize detection, benchmark
+- [docs/adopting.md](docs/adopting.md): gating an existing suite: stable per-test coverage, triage, baseline
 - [docs/releasing.md](docs/releasing.md)
 
 ## Development
